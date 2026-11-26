@@ -1,5 +1,5 @@
 use crate::game::{
-    COLS, Effect, EffectKind, Game, MAX_LEVELS, Plant, PlantKind, ROWS, Status, Zombie,
+    COLS, Effect, EffectKind, FloatKind, Game, MAX_LEVELS, Plant, PlantKind, ROWS, Status, Zombie,
     level_config,
 };
 use crate::pixel_art::{Sprite, Sprites};
@@ -294,8 +294,42 @@ fn plant_sprite(kind: PlantKind) -> Sprite {
 
 fn draw_plant(sprites: &Sprites, p: &Plant, x: f32, y: f32, cell: f32, t: f32) {
     let bob = (t * 2.0 + x * 0.01).sin() * cell * 0.015;
-    sprites.draw_box(plant_sprite(p.kind), x, y + bob, cell);
-    health_bar(x + 5.0, y + 4.0, cell - 10.0, p.hp / p.kind.max_hp());
+    let pop = (p.flash / 0.32).clamp(0.0, 1.0);
+    let (dx, dy, scale) = match p.kind {
+        PlantKind::Sunflower => (0.0, -pop * cell * 0.06, 1.0 + pop * 0.14),
+        PlantKind::Peashooter => (-pop * cell * 0.10, 0.0, 1.0),
+        PlantKind::Wallnut => (0.0, 0.0, 1.0),
+    };
+    sprites.draw_centered(
+        plant_sprite(p.kind),
+        x + cell / 2.0 + dx,
+        y + cell / 2.0 + dy + bob,
+        cell * scale,
+    );
+
+    // Wallnut cracks as it takes damage.
+    let ratio = p.hp / p.kind.max_hp();
+    if ratio < 0.6 && p.kind == PlantKind::Wallnut {
+        draw_line(
+            x + cell * 0.38,
+            y + cell * 0.30,
+            x + cell * 0.55,
+            y + cell * 0.52,
+            2.0,
+            col(45, 28, 16),
+        );
+    }
+    if ratio < 0.3 && p.kind == PlantKind::Wallnut {
+        draw_line(
+            x + cell * 0.58,
+            y + cell * 0.28,
+            x + cell * 0.42,
+            y + cell * 0.62,
+            2.0,
+            col(45, 28, 16),
+        );
+    }
+    health_bar(x + 5.0, y + 4.0, cell - 10.0, ratio);
 }
 
 fn draw_zombie(sprites: &Sprites, z: &Zombie, x: f32, y: f32, cell: f32, t: f32) {
@@ -330,6 +364,109 @@ fn draw_zombie(sprites: &Sprites, z: &Zombie, x: f32, y: f32, cell: f32, t: f32)
 fn draw_sun(sprites: &Sprites, cx: f32, cy: f32, cell: f32, t: f32) {
     let pulse = 1.0 + (t * 4.0).sin() * 0.06;
     sprites.draw_centered(Sprite::Sun, cx, cy, cell * 0.9 * pulse);
+}
+
+/// Show what would be planted where. Mouse wins when it is over the board;
+/// otherwise the keyboard cursor is used.
+fn draw_ghost(sprites: &Sprites, g: &Game, l: &Layout, hover: Option<(usize, usize)>) {
+    if g.status != Status::Playing {
+        return;
+    }
+    let (r, c) = hover.unwrap_or(g.cursor);
+    if r >= ROWS || c >= COLS {
+        return;
+    }
+    let x = l.board_x + c as f32 * l.cell;
+    let y = l.board_y + r as f32 * l.cell;
+    let occupied = g.plants.iter().any(|p| p.row == r && p.col == c);
+    let affordable = g.sun >= g.selected.cost();
+    let ok = !occupied && affordable;
+    let tint = if ok { GREEN } else { RED };
+
+    draw_rectangle(x, y, l.cell, l.cell, with_alpha(tint, 0.16));
+    draw_rectangle_lines(x, y, l.cell, l.cell, 2.0, with_alpha(tint, 0.70));
+    sprites.draw_ghost(
+        plant_sprite(g.selected),
+        x + l.cell / 2.0,
+        y + l.cell / 2.0,
+        l.cell * 0.88,
+        if ok { 0.55 } else { 0.28 },
+    );
+}
+
+fn draw_lawnmowers(sprites: &Sprites, g: &Game, l: &Layout) {
+    for (row, ready) in g.lawnmowers.iter().enumerate() {
+        if *ready {
+            sprites.draw_box(
+                Sprite::Lawnmower,
+                l.board_x + l.cell * 0.06,
+                l.board_y + row as f32 * l.cell,
+                l.cell * 0.46,
+            );
+        }
+    }
+    for run in &g.mower_runs {
+        if run.row >= ROWS {
+            continue;
+        }
+        sprites.draw_box(
+            Sprite::Lawnmower,
+            l.board_x + run.x * l.cell,
+            l.board_y + run.row as f32 * l.cell,
+            l.cell * 0.85,
+        );
+    }
+}
+
+fn draw_floaters(g: &Game, l: &Layout) {
+    for f in &g.floaters {
+        let age = (f.duration - f.life).max(0.0);
+        let progress = (age / f.duration).clamp(0.0, 1.0);
+        let text = format!("{:+}", f.value);
+        let x = l.board_x + f.x * l.cell;
+        let y = l.board_y + (f.y - progress * 0.9) * l.cell;
+        let color = match f.kind {
+            FloatKind::Sun => YELLOW,
+            FloatKind::Spend => RED,
+            FloatKind::Kill => GREEN,
+        };
+        text_centered(&text, x, y, FONT_SMALL, with_alpha(color, 1.0 - progress));
+    }
+}
+
+fn draw_wave_warning(g: &Game, l: &Layout, t: f32) {
+    let Some((msg, life)) = &g.wave_warning else {
+        return;
+    };
+    let alpha = (life / 1.2).clamp(0.25, 1.0);
+    let pulse = 1.0 + (t * 12.0).sin() * 0.02;
+    let text_w = measure_text(msg, None, FONT_BODY as u16, 1.0).width;
+    let w = (text_w + 56.0) * pulse;
+    let h = 46.0;
+    let cx = screen_width() / 2.0;
+    let cy = l.board_y + l.board_h * 0.18;
+    draw_rectangle(
+        cx - w / 2.0,
+        cy - h / 2.0,
+        w,
+        h,
+        with_alpha(col(18, 18, 26), 0.82),
+    );
+    draw_rectangle_lines(
+        cx - w / 2.0,
+        cy - h / 2.0,
+        w,
+        h,
+        3.0,
+        with_alpha(YELLOW, alpha),
+    );
+    text_centered(
+        msg,
+        cx,
+        cy + FONT_BODY * 0.35,
+        FONT_BODY,
+        with_alpha(YELLOW, alpha),
+    );
 }
 
 fn draw_background(l: &Layout) {
@@ -379,8 +516,8 @@ fn draw_hud(g: &Game, l: &Layout, records: &Records, audio_on: bool) {
     let cfg = level_config(g.level);
     let best = records.get(g.level);
     let best_text = match best.best_time {
-        Some(t) => format!("{} / {}", fmt_time(t), best.best_score),
-        None => "--:-- / 0".to_string(),
+        Some(t) => format!("{} / {} / *{}", fmt_time(t), best.best_score, best.stars),
+        None => "--:-- / 0 / *0".to_string(),
     };
     // draw_text takes the baseline as y, so keep the title's glyphs on screen.
     text_centered("PLANTS vs ZOMBIES", w / 2.0, 48.0, FONT_TITLE, YELLOW);
@@ -462,12 +599,16 @@ fn draw_result(g: &Game, l: &Layout, records: &Records, improvement: Improvement
         Some(t) => format!("Best {} / {} pts", fmt_time(t), best.best_score),
         None => "No record yet".to_string(),
     };
-    let record = if won && (improvement.time || improvement.score) {
-        let what = match (improvement.time, improvement.score) {
-            (true, true) => "NEW RECORD!",
-            (true, false) => "NEW BEST TIME!",
-            (false, true) => "NEW HIGH SCORE!",
-            (false, false) => "",
+    let record = format!("{record}   Stars {}/3", g.stars());
+    let record = if won && (improvement.time || improvement.score || improvement.stars) {
+        let what = if improvement.time && improvement.score {
+            "NEW RECORD!"
+        } else if improvement.stars {
+            "NEW STARS!"
+        } else if improvement.time {
+            "NEW BEST TIME!"
+        } else {
+            "NEW HIGH SCORE!"
         };
         format!("{what}   {record}")
     } else {
@@ -494,6 +635,8 @@ pub fn draw_game(
 ) {
     let l = layout();
     let t = get_time() as f32;
+    let (mx, my) = mouse_position();
+    let hover = cell_at(&l, mx, my);
     draw_background(&l);
     draw_hud(g, &l, records, audio_on);
     draw_cards(sprites, g, &l);
@@ -518,8 +661,10 @@ pub fn draw_game(
             draw_rectangle(x, y, l.cell, l.cell, Color::from_rgba(90, 100, 50, 90));
             draw_rectangle_lines(x, y, l.cell, l.cell, 2.0, YELLOW);
         }
+        draw_ghost(sprites, g, &l, hover);
     }
 
+    draw_lawnmowers(sprites, g, &l);
     for p in &g.plants {
         let x = l.board_x + p.col as f32 * l.cell;
         let y = l.board_y + p.row as f32 * l.cell;
@@ -543,9 +688,11 @@ pub fn draw_game(
     for e in &g.effects {
         draw_particles(e, &l);
     }
+    draw_floaters(g, &l);
+    draw_wave_warning(g, &l, t);
 
     if g.status == Status::Playing {
-        let hints = "1/2/3 pick  |  Arrows move  |  Space plant  |  C sun  |  M sound  |  N new  |  Esc menu";
+        let hints = "1/2/3 pick  |  Arrows move  |  Space plant  |  X shovel  |  C sun  |  M sound  |  Esc menu";
         text_centered(
             hints,
             screen_width() / 2.0,

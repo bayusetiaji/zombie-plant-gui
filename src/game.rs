@@ -17,6 +17,9 @@ const EAT_DAMAGE: f32 = 18.0;
 const SUN_COOLDOWN: f32 = 6.0;
 const SKY_SUN_INTERVAL: f32 = 7.0;
 const SUN_LIFETIME: f32 = 14.0;
+const SHOVEL_REFUND: i32 = 25;
+const BIG_WAVE_EVERY: usize = 4;
+const MOWER_SPEED: f32 = 14.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LevelConfig {
@@ -27,6 +30,7 @@ pub struct LevelConfig {
     pub spawn_min: f32,
     pub speed_mul: f32,
     pub zombie_hp: f32,
+    pub star_time: f32,
 }
 
 pub fn level_config(level: usize) -> LevelConfig {
@@ -39,6 +43,7 @@ pub fn level_config(level: usize) -> LevelConfig {
             spawn_min: 2.6,
             speed_mul: 1.0,
             zombie_hp: ZOMBIE_HP,
+            star_time: 120.0,
         },
         2 => LevelConfig {
             zombies: 14,
@@ -48,6 +53,7 @@ pub fn level_config(level: usize) -> LevelConfig {
             spawn_min: 2.3,
             speed_mul: 1.15,
             zombie_hp: 110.0,
+            star_time: 150.0,
         },
         _ => LevelConfig {
             zombies: 18,
@@ -57,6 +63,7 @@ pub fn level_config(level: usize) -> LevelConfig {
             spawn_min: 2.0,
             speed_mul: 1.3,
             zombie_hp: 120.0,
+            star_time: 180.0,
         },
     }
 }
@@ -113,6 +120,7 @@ pub struct Plant {
     pub row: usize,
     pub col: usize,
     pub hp: f32,
+    pub flash: f32,
     timer: f32,
 }
 
@@ -150,10 +158,13 @@ pub enum Status {
 pub enum GameEvent {
     Select,
     Plant,
+    Shovel,
     Shoot,
     Hit,
     ZombieDie,
     Sun,
+    WaveWarning,
+    Lawnmower,
     Win,
     Lose,
 }
@@ -203,6 +214,32 @@ fn effect(kind: EffectKind, x: f32, y: f32) -> Effect {
     Effect::new(kind, x, y)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatKind {
+    Sun,
+    Spend,
+    Kill,
+}
+
+/// Small rising number, e.g. `+40` when a sun is collected.
+#[derive(Clone, Copy, Debug)]
+pub struct FloatingText {
+    pub kind: FloatKind,
+    pub value: i32,
+    pub x: f32,
+    pub y: f32,
+    pub life: f32,
+    pub duration: f32,
+}
+
+/// A lawnmower sweeping across one row after a zombie escaped.
+#[derive(Clone, Copy, Debug)]
+pub struct MowerRun {
+    pub row: usize,
+    pub x: f32,
+    pub life: f32,
+}
+
 pub struct Game {
     pub level: usize,
     pub sun: i32,
@@ -219,8 +256,13 @@ pub struct Game {
     pub notice: Option<(String, f32)>,
     pub events: Vec<GameEvent>,
     pub effects: Vec<Effect>,
+    pub floaters: Vec<FloatingText>,
+    pub lawnmowers: [bool; ROWS],
+    pub mower_runs: Vec<MowerRun>,
+    pub wave_warning: Option<(String, f32)>,
     sky_timer: f32,
     zombie_timer: f32,
+    pending_big_wave: bool,
     rng: Rng,
 }
 
@@ -261,8 +303,13 @@ impl Game {
             )),
             events: Vec::new(),
             effects: Vec::new(),
+            floaters: Vec::new(),
+            lawnmowers: [true; ROWS],
+            mower_runs: Vec::new(),
+            wave_warning: None,
             sky_timer: 3.0,
             zombie_timer: cfg.first_spawn,
+            pending_big_wave: false,
             rng: Rng::new(seed),
         }
     }
@@ -301,6 +348,63 @@ impl Game {
         self.notice = Some((msg.into(), 2.5));
     }
 
+    fn float(&mut self, kind: FloatKind, value: i32, x: f32, y: f32) {
+        let duration = 0.8;
+        self.floaters.push(FloatingText {
+            kind,
+            value,
+            x,
+            y,
+            life: duration,
+            duration,
+        });
+    }
+
+    /// Clear + fast time + no lawnmower used. Only wins earn stars.
+    pub fn stars(&self) -> u8 {
+        if self.status != Status::Won {
+            return 0;
+        }
+        let mut stars = 1;
+        if self.elapsed <= level_config(self.level).star_time {
+            stars += 1;
+        }
+        if self.lawnmowers.iter().all(|&ready| ready) {
+            stars += 1;
+        }
+        stars
+    }
+
+    /// Remove a plant with a small sun refund. Returns true when one was removed.
+    pub fn try_shovel(&mut self, row: usize, col: usize) -> bool {
+        if self.status != Status::Playing || row >= ROWS || col >= COLS {
+            return false;
+        }
+        let Some(i) = self
+            .plants
+            .iter()
+            .position(|p| p.row == row && p.col == col)
+        else {
+            return false;
+        };
+        self.plants.remove(i);
+        self.sun += SHOVEL_REFUND;
+        self.set_notice(format!("Shoveled plant (+{SHOVEL_REFUND} sun)"));
+        self.events.push(GameEvent::Shovel);
+        self.effects.push(effect(
+            EffectKind::Plant,
+            col as f32 + 0.5,
+            row as f32 + 0.5,
+        ));
+        self.float(
+            FloatKind::Sun,
+            SHOVEL_REFUND,
+            col as f32 + 0.5,
+            row as f32 + 0.35,
+        );
+        true
+    }
+
     pub fn select(&mut self, kind: PlantKind) {
         self.selected = kind;
         self.set_notice(format!("Selected {} ({} sun)", kind.name(), kind.cost()));
@@ -326,6 +430,7 @@ impl Game {
             row,
             col,
             hp: kind.max_hp(),
+            flash: 0.28,
             timer: 0.0,
         });
         self.events.push(GameEvent::Plant);
@@ -334,6 +439,12 @@ impl Game {
             col as f32 + 0.5,
             row as f32 + 0.5,
         ));
+        self.float(
+            FloatKind::Spend,
+            -kind.cost(),
+            col as f32 + 0.5,
+            row as f32 + 0.35,
+        );
     }
 
     /// Returns true when a falling sun was collected at this tile.
@@ -349,6 +460,12 @@ impl Game {
             self.events.push(GameEvent::Sun);
             self.effects
                 .push(effect(EffectKind::Sun, col as f32 + 0.5, row as f32 + 0.5));
+            self.float(
+                FloatKind::Sun,
+                SUN_VALUE,
+                col as f32 + 0.5,
+                row as f32 + 0.35,
+            );
             true
         } else {
             false
@@ -376,6 +493,12 @@ impl Game {
             self.events.push(GameEvent::Sun);
             self.effects
                 .push(effect(EffectKind::Sun, sun.col as f32 + 0.5, sun.y + 0.5));
+            self.float(
+                FloatKind::Sun,
+                SUN_VALUE,
+                sun.col as f32 + 0.5,
+                sun.y + 0.35,
+            );
         }
     }
 
@@ -394,6 +517,21 @@ impl Game {
             e.life -= dt;
         }
         self.effects.retain(|e| e.life > 0.0);
+        for f in &mut self.floaters {
+            f.life -= dt;
+        }
+        self.floaters.retain(|f| f.life > 0.0);
+
+        let mut warning_expired = false;
+        if let Some((_, t)) = &mut self.wave_warning {
+            *t -= dt;
+            if *t <= 0.0 {
+                warning_expired = true;
+            }
+        }
+        if warning_expired {
+            self.wave_warning = None;
+        }
 
         if self.status != Status::Playing {
             return;
@@ -425,6 +563,7 @@ impl Game {
 
         // Plants: sunflowers generate sun, peashooters fire at zombies in their row.
         for p in &mut self.plants {
+            p.flash = (p.flash - dt).max(0.0);
             p.timer -= dt;
             if p.timer > 0.0 {
                 continue;
@@ -432,6 +571,7 @@ impl Game {
             match p.kind {
                 PlantKind::Sunflower => {
                     p.timer += SUN_COOLDOWN;
+                    p.flash = 0.32;
                     self.suns.push(Sun {
                         col: p.col,
                         y: p.row as f32,
@@ -446,6 +586,7 @@ impl Game {
                         .any(|z| z.row == p.row && z.x > p.col as f32 + 0.2);
                     if has_target {
                         p.timer += PEA_COOLDOWN;
+                        p.flash = 0.20;
                         self.peas.push(Pea {
                             x: p.col as f32 + 0.4,
                             row: p.row,
@@ -481,6 +622,7 @@ impl Game {
                 if z.attack <= 0.0 {
                     z.attack += EAT_INTERVAL;
                     p.hp -= EAT_DAMAGE;
+                    p.flash = 0.25;
                     self.effects.push(effect(
                         EffectKind::Eat,
                         p.col as f32 + 0.55,
@@ -534,31 +676,89 @@ impl Game {
             self.events.push(GameEvent::ZombieDie);
             self.effects
                 .push(effect(EffectKind::Death, x, row as f32 + 0.5));
+            self.float(FloatKind::Kill, 100, x, row as f32 + 0.3);
         }
 
         // Spawn waves: each level is a bit denser and faster than the last.
+        // Every fourth spawn is a small surge with an early warning banner.
         let cfg = level_config(self.level);
         if self.spawned < cfg.zombies {
             self.zombie_timer -= dt;
+            let surge_next =
+                (self.spawned + 1) % BIG_WAVE_EVERY == 0 && self.spawned + 2 <= cfg.zombies;
+            if !self.pending_big_wave && surge_next && self.zombie_timer <= 1.2 {
+                self.pending_big_wave = true;
+                self.wave_warning = Some(("BIG WAVE INCOMING!".to_string(), 1.2));
+                self.events.push(GameEvent::WaveWarning);
+            }
             if self.zombie_timer <= 0.0 {
-                let row = self.rng.range(ROWS);
-                self.zombies.push(Zombie {
-                    x: COLS as f32 - 0.1,
-                    row,
-                    hp: cfg.zombie_hp,
-                    max_hp: cfg.zombie_hp,
-                    walk_phase: self.rng.range_f32(0.0, 2.0),
-                    walking: true,
-                    attack: EAT_INTERVAL,
-                    speed: ZOMBIE_SPEED * cfg.speed_mul * self.rng.range_f32(0.85, 1.2),
-                });
-                self.spawned += 1;
+                let count = if self.pending_big_wave { 2 } else { 1 };
+                for _ in 0..count {
+                    let row = self.rng.range(ROWS);
+                    self.zombies.push(Zombie {
+                        x: COLS as f32 - 0.1,
+                        row,
+                        hp: cfg.zombie_hp,
+                        max_hp: cfg.zombie_hp,
+                        walk_phase: self.rng.range_f32(0.0, 2.0),
+                        walking: true,
+                        attack: EAT_INTERVAL,
+                        speed: ZOMBIE_SPEED * cfg.speed_mul * self.rng.range_f32(0.85, 1.2),
+                    });
+                    self.spawned += 1;
+                }
+                self.pending_big_wave = false;
+                self.wave_warning = None;
                 let gap = (cfg.spawn_base - self.spawned as f32 * 0.16).max(cfg.spawn_min);
                 self.zombie_timer += gap;
             }
         }
 
-        if self.zombies.iter().any(|z| z.x < 0.0) {
+        // A zombie crossing the left edge triggers that row's one-shot
+        // lawnmower. Only a second escape in the same row loses the game.
+        let escaped: Vec<usize> = self
+            .zombies
+            .iter()
+            .filter(|z| z.x < 0.0)
+            .map(|z| z.row)
+            .collect();
+        let mut lost = false;
+        for row in escaped {
+            if !self.lawnmowers[row] {
+                lost = true;
+                continue;
+            }
+            self.lawnmowers[row] = false;
+            let victims: Vec<f32> = self
+                .zombies
+                .iter()
+                .filter(|z| z.row == row)
+                .map(|z| z.x + 0.5)
+                .collect();
+            self.zombies.retain(|z| z.row != row);
+            for x in victims {
+                self.killed += 1;
+                self.events.push(GameEvent::ZombieDie);
+                self.effects
+                    .push(effect(EffectKind::Death, x, row as f32 + 0.5));
+                self.float(FloatKind::Kill, 100, x, row as f32 + 0.3);
+            }
+            self.mower_runs.push(MowerRun {
+                row,
+                x: -0.6,
+                life: 1.0,
+            });
+            self.events.push(GameEvent::Lawnmower);
+            self.set_notice(format!("Lawnmower cleared row {}!", row + 1));
+        }
+        for run in &mut self.mower_runs {
+            run.x += MOWER_SPEED * dt;
+            run.life -= dt;
+        }
+        self.mower_runs
+            .retain(|run| run.life > 0.0 && run.x < COLS as f32 + 1.0);
+
+        if lost {
             self.status = Status::Lost;
             self.set_notice("A zombie reached your house!");
             self.events.push(GameEvent::Lose);
@@ -624,6 +824,8 @@ mod tests {
     #[test]
     fn zombie_reaching_the_left_side_loses_the_game() {
         let mut g = Game::new(3);
+        // The row's lawnmower is already spent, so this escape is fatal.
+        g.lawnmowers[1] = false;
         g.zombies.push(Zombie {
             x: 0.05,
             row: 1,
@@ -803,5 +1005,108 @@ mod tests {
                 .iter()
                 .any(|e| e.kind == EffectKind::Death && (e.x - 3.5).abs() < 0.01)
         );
+    }
+
+    #[test]
+    fn shovel_removes_a_plant_and_refunds_sun() {
+        let mut g = Game::new(16);
+        g.try_plant(2, 3);
+        let after_plant = g.sun;
+
+        assert!(g.try_shovel(2, 3));
+        assert_eq!(g.sun, after_plant + SHOVEL_REFUND);
+        assert!(g.plants.is_empty());
+        assert!(!g.try_shovel(2, 3));
+        assert!(g.events.contains(&GameEvent::Shovel));
+        assert!(
+            g.floaters
+                .iter()
+                .any(|f| f.kind == FloatKind::Sun && f.value == SHOVEL_REFUND)
+        );
+    }
+
+    #[test]
+    fn stars_need_speed_and_an_untouched_lawnmower_set() {
+        let mut g = Game::new(17);
+        g.status = Status::Won;
+        g.elapsed = level_config(1).star_time - 1.0;
+        assert_eq!(g.stars(), 3);
+
+        g.lawnmowers[0] = false;
+        assert_eq!(g.stars(), 2);
+
+        g.elapsed = level_config(1).star_time + 1.0;
+        assert_eq!(g.stars(), 1);
+
+        g.status = Status::Playing;
+        assert_eq!(g.stars(), 0);
+    }
+
+    #[test]
+    fn big_wave_warns_then_spawns_two_zombies() {
+        let mut g = Game::new(18);
+        g.spawned = BIG_WAVE_EVERY - 1;
+        g.zombie_timer = 0.5;
+
+        g.update(0.1);
+        assert!(g.wave_warning.is_some());
+        assert!(g.events.contains(&GameEvent::WaveWarning));
+
+        g.update(0.5);
+        assert_eq!(g.spawned, BIG_WAVE_EVERY + 1);
+        assert_eq!(g.zombies.len(), 2);
+        assert!(g.wave_warning.is_none());
+    }
+
+    #[test]
+    fn lawnmower_saves_a_row_only_once() {
+        let mut g = Game::new(19);
+        g.zombies.push(Zombie {
+            x: -0.05,
+            row: 2,
+            hp: ZOMBIE_HP,
+            max_hp: ZOMBIE_HP,
+            walk_phase: 0.0,
+            walking: false,
+            attack: EAT_INTERVAL,
+            speed: 0.0,
+        });
+
+        g.update(0.016);
+        assert!(!g.lawnmowers[2]);
+        assert!(g.zombies.is_empty());
+        assert_eq!(g.killed, 1);
+        assert_eq!(g.mower_runs.len(), 1);
+        assert_eq!(g.status, Status::Playing);
+
+        g.zombies.push(Zombie {
+            x: -0.05,
+            row: 2,
+            hp: ZOMBIE_HP,
+            max_hp: ZOMBIE_HP,
+            walk_phase: 0.0,
+            walking: false,
+            attack: EAT_INTERVAL,
+            speed: 0.0,
+        });
+        g.update(0.016);
+        assert_eq!(g.status, Status::Lost);
+    }
+
+    #[test]
+    fn floating_numbers_rise_then_expire() {
+        let mut g = Game::new(20);
+        g.suns.push(Sun {
+            col: 4,
+            y: 2.0,
+            target_y: 2.0,
+            life: 10.0,
+        });
+        assert!(g.collect_at(2, 4));
+        assert!(g.floaters.iter().any(|f| f.value == SUN_VALUE));
+        for _ in 0..20 {
+            g.update(0.05);
+        }
+        assert!(g.floaters.is_empty());
     }
 }

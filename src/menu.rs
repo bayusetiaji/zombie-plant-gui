@@ -238,8 +238,13 @@ fn draw_main(menu: &Menu, records: &Records) {
     for level in 1..=MAX_LEVELS {
         let best = records.get(level);
         let text = match best.best_time {
-            Some(t) => format!("LV{level}  {} / {} pts", fmt_time(t), best.best_score),
-            None => format!("LV{level}  --:-- / 0 pts"),
+            Some(t) => format!(
+                "LV{level}  *{}/3  {} / {} pts",
+                best.stars,
+                fmt_time(t),
+                best.best_score
+            ),
+            None => format!("LV{level}  *0/3  --:-- / 0 pts"),
         };
         text_centered(
             &text,
@@ -294,8 +299,13 @@ fn draw_level_select(menu: &Menu, records: &Records, sprites: &Sprites) {
         sprites.draw_centered(icon, r.x + r.w / 2.0, r.y + 98.0, 64.0);
         let best = records.get(level);
         let detail = match best.best_time {
-            Some(t) => format!("BEST {} / {} pts", fmt_time(t), best.best_score),
-            None => "NO RECORD YET".to_string(),
+            Some(t) => format!(
+                "BEST {} / {} pts  *{}/3",
+                fmt_time(t),
+                best.best_score,
+                best.stars
+            ),
+            None => "NO RECORD YET  *0/3".to_string(),
         };
         text_centered(&detail, r.x + r.w / 2.0, r.y + 150.0, BODY_SIZE, WHITE);
         text_centered(
@@ -332,6 +342,7 @@ fn draw_help() {
         "1 / 2 / 3  -  pick Sunflower, Peashooter, Wallnut",
         "Arrows / WASD  -  move the planting cursor",
         "Space / Enter / click  -  plant on the tile",
+        "X / right-click  -  shovel a plant (+25 sun)",
         "C / click a sun  -  collect sun",
         "M sound on/off   N restart campaign",
         "Survive all 3 levels before a zombie gets home",
@@ -392,7 +403,7 @@ mod tests {
         let mut records = Records::from_path(path);
         assert!(Menu::is_locked(2, &records));
 
-        records.submit(1, 42.0, 1234);
+        records.submit(1, 42.0, 1234, 3);
         assert!(!Menu::is_locked(2, &records));
         assert!(Menu::is_locked(3, &records));
     }

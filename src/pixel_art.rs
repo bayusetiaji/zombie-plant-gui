@@ -15,6 +15,7 @@ pub enum Sprite {
     ZombieStep,
     Sun,
     Pea,
+    Lawnmower,
 }
 
 const PALETTE: &[(char, Color)] = &[
@@ -161,6 +162,24 @@ fn rows_for(sprite: Sprite) -> &'static [&'static str] {
             "................",
             "................",
         ],
+        Sprite::Lawnmower => &[
+            "................",
+            "................",
+            "..........KKK...",
+            ".........KYYYK..",
+            "...KKKKKKYYYYK..",
+            "..KYYYYKYYYYYK..",
+            ".KYYYYYKYYYYYK..",
+            ".KYYYYYKYYYYYK..",
+            "..KYYYYKYYYYYK..",
+            "...KKKKKKKKKK...",
+            "....KkkK..KkkK..",
+            "...KkkkK..KkkkK.",
+            "...KkKkK..KkKkK.",
+            "....KKK....KKK..",
+            "................",
+            "................",
+        ],
     }
 }
 
@@ -195,7 +214,7 @@ fn texture(rows: &[&str]) -> Texture2D {
 }
 
 pub struct Sprites {
-    inner: [Texture2D; 7],
+    inner: [Texture2D; 8],
 }
 
 impl Sprites {
@@ -209,6 +228,7 @@ impl Sprites {
                 texture(rows_for(Sprite::ZombieStep)),
                 texture(rows_for(Sprite::Sun)),
                 texture(rows_for(Sprite::Pea)),
+                texture(rows_for(Sprite::Lawnmower)),
             ],
         }
     }
@@ -234,6 +254,20 @@ impl Sprites {
     pub fn draw_box(&self, sprite: Sprite, x: f32, y: f32, size: f32) {
         self.draw_centered(sprite, x + size / 2.0, y + size / 2.0, size);
     }
+
+    /// Semi-transparent draw used for the planting preview.
+    pub fn draw_ghost(&self, sprite: Sprite, cx: f32, cy: f32, size: f32, alpha: f32) {
+        draw_texture_ex(
+            self.get(sprite),
+            cx - size / 2.0,
+            cy - size / 2.0,
+            Color::new(1.0, 1.0, 1.0, alpha.clamp(0.0, 1.0)),
+            DrawTextureParams {
+                dest_size: Some(vec2(size, size)),
+                ..Default::default()
+            },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -250,6 +284,7 @@ mod tests {
             Sprite::ZombieStep,
             Sprite::Sun,
             Sprite::Pea,
+            Sprite::Lawnmower,
         ] {
             assert_eq!(rows_for(sprite).len(), H as usize);
         }
@@ -265,6 +300,7 @@ mod tests {
             Sprite::ZombieStep,
             Sprite::Sun,
             Sprite::Pea,
+            Sprite::Lawnmower,
         ] {
             for row in rows_for(sprite) {
                 for ch in row.chars() {

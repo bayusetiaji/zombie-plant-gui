@@ -18,10 +18,13 @@ enum Wave {
 pub enum Sound {
     Select,
     Plant,
+    Shovel,
     Shoot,
     Hit,
     ZombieDie,
     Sun,
+    WaveWarning,
+    Lawnmower,
     Win,
     Lose,
 }
@@ -72,6 +75,7 @@ impl Audio {
         let samples = match sound {
             Sound::Select => tone(660.0, 0.06, 0.05, Wave::Square),
             Sound::Plant => sweep(220.0, 90.0, 0.14, 0.10, Wave::Triangle),
+            Sound::Shovel => sweep(420.0, 180.0, 0.12, 0.08, Wave::Triangle),
             Sound::Shoot => sweep(900.0, 420.0, 0.07, 0.06, Wave::Sine),
             Sound::Hit => concat(vec![
                 noise(0.07, 0.07, &mut rng),
@@ -82,6 +86,14 @@ impl Audio {
                 tone(784.0, 0.07, 0.07, Wave::Sine),
                 tone(988.0, 0.07, 0.07, Wave::Sine),
                 tone(1319.0, 0.10, 0.07, Wave::Sine),
+            ]),
+            Sound::WaveWarning => concat(vec![
+                tone(220.0, 0.14, 0.08, Wave::Square),
+                tone(220.0, 0.14, 0.08, Wave::Square),
+            ]),
+            Sound::Lawnmower => concat(vec![
+                noise(0.28, 0.09, &mut rng),
+                sweep(180.0, 60.0, 0.35, 0.10, Wave::Saw),
             ]),
             Sound::Win => concat(vec![
                 tone(523.25, 0.12, 0.07, Wave::Triangle),

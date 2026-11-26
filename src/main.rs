@@ -119,6 +119,10 @@ fn handle_game_input(g: &mut Game, audio: &mut Audio) -> GameInput {
         let (r, c) = g.cursor;
         g.try_plant(r, c);
     }
+    if is_key_pressed(KeyCode::X) {
+        let (r, c) = g.cursor;
+        g.try_shovel(r, c);
+    }
     if is_key_pressed(KeyCode::Enter) {
         if g.status == Status::Won {
             g.next_level();
@@ -149,6 +153,12 @@ fn handle_game_input(g: &mut Game, audio: &mut Audio) -> GameInput {
             if !g.collect_at(r, c) {
                 g.try_plant(r, c);
             }
+        }
+    }
+    if is_mouse_button_pressed(MouseButton::Right) {
+        let (mx, my) = mouse_position();
+        if let Some((r, c)) = cell_at(&layout(), mx, my) {
+            g.try_shovel(r, c);
         }
     }
     GameInput::Continue
@@ -202,16 +212,23 @@ async fn main() {
                     let events: Vec<GameEvent> = game.events.drain(..).collect();
                     for event in events {
                         if event == GameEvent::Win {
-                            last_improvement =
-                                records.submit(game.level, game.elapsed, game.score());
+                            last_improvement = records.submit(
+                                game.level,
+                                game.elapsed,
+                                game.score(),
+                                game.stars(),
+                            );
                         }
                         let sound = match event {
                             GameEvent::Select => Sound::Select,
                             GameEvent::Plant => Sound::Plant,
+                            GameEvent::Shovel => Sound::Shovel,
                             GameEvent::Shoot => Sound::Shoot,
                             GameEvent::Hit => Sound::Hit,
                             GameEvent::ZombieDie => Sound::ZombieDie,
                             GameEvent::Sun => Sound::Sun,
+                            GameEvent::WaveWarning => Sound::WaveWarning,
+                            GameEvent::Lawnmower => Sound::Lawnmower,
                             GameEvent::Win => Sound::Win,
                             GameEvent::Lose => Sound::Lose,
                         };
