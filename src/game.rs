@@ -18,53 +18,73 @@ const SUN_COOLDOWN: f32 = 6.0;
 const SKY_SUN_INTERVAL: f32 = 7.0;
 const SUN_LIFETIME: f32 = 14.0;
 const SHOVEL_REFUND: i32 = 25;
-const BIG_WAVE_EVERY: usize = 4;
+pub const BIG_WAVE_EVERY: usize = 4;
 const MOWER_SPEED: f32 = 14.0;
+const FIRST_STAR_WAVE: usize = 10;
+const SECOND_STAR_WAVE: usize = 20;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LevelConfig {
-    pub zombies: usize,
     pub start_sun: i32,
     pub first_spawn: f32,
     pub spawn_base: f32,
     pub spawn_min: f32,
     pub speed_mul: f32,
     pub zombie_hp: f32,
-    pub star_time: f32,
+    pub hp_growth: f32,
+    pub speed_growth: f32,
 }
 
 pub fn level_config(level: usize) -> LevelConfig {
     match level.clamp(1, MAX_LEVELS) {
         1 => LevelConfig {
-            zombies: 10,
             start_sun: START_SUN,
             first_spawn: 6.0,
             spawn_base: 4.4,
             spawn_min: 2.6,
             speed_mul: 1.0,
             zombie_hp: ZOMBIE_HP,
-            star_time: 120.0,
+            hp_growth: 4.0,
+            speed_growth: 0.008,
         },
         2 => LevelConfig {
-            zombies: 14,
             start_sun: START_SUN,
             first_spawn: 5.0,
             spawn_base: 3.9,
             spawn_min: 2.3,
             speed_mul: 1.15,
             zombie_hp: 110.0,
-            star_time: 150.0,
+            hp_growth: 5.0,
+            speed_growth: 0.010,
         },
         _ => LevelConfig {
-            zombies: 18,
             start_sun: START_SUN,
             first_spawn: 4.0,
             spawn_base: 3.5,
             spawn_min: 2.0,
             speed_mul: 1.3,
             zombie_hp: 120.0,
-            star_time: 180.0,
+            hp_growth: 6.0,
+            speed_growth: 0.012,
         },
+    }
+}
+
+/// Friendly names for the three endless difficulties.
+pub fn level_name(level: usize) -> &'static str {
+    match level.clamp(1, MAX_LEVELS) {
+        1 => "EASY",
+        2 => "MEDIUM",
+        _ => "HARD",
+    }
+}
+
+/// Wave a player must reach on the previous difficulty to unlock this one.
+pub fn unlock_wave(level: usize) -> usize {
+    match level.clamp(1, MAX_LEVELS) {
+        1 => 0,
+        2 => FIRST_STAR_WAVE,
+        _ => SECOND_STAR_WAVE - 5,
     }
 }
 
@@ -150,7 +170,6 @@ pub struct Sun {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Playing,
-    Won,
     Lost,
 }
 
@@ -165,7 +184,7 @@ pub enum GameEvent {
     Sun,
     WaveWarning,
     Lawnmower,
-    Win,
+    Milestone,
     Lose,
 }
 
@@ -250,6 +269,8 @@ pub struct Game {
     pub suns: Vec<Sun>,
     pub cursor: (usize, usize),
     pub status: Status,
+    pub paused: bool,
+    pub wave: usize,
     pub spawned: usize,
     pub killed: usize,
     pub elapsed: f32,
@@ -291,13 +312,15 @@ impl Game {
             suns: Vec::new(),
             cursor: (2, 4),
             status: Status::Playing,
+            paused: false,
+            wave: 1,
             spawned: 0,
             killed: 0,
             elapsed: 0.0,
             notice: Some((
                 format!(
-                    "Level {} - pick a plant (1/2/3), then plant with Space.",
-                    level
+                    "{} - endless survival. Pick a plant (1/2/3), then Space.",
+                    level_name(level)
                 ),
                 7.0,
             )),
@@ -325,23 +348,19 @@ impl Game {
         *self = Self::with_level(fresh_seed(), 1);
     }
 
-    /// Advance after a win; after the final level, loop back to level 1.
-    pub fn next_level(&mut self) {
-        if self.status != Status::Won {
-            return;
+    /// Toggle the frozen state. Returns the new paused value when the toggle
+    /// was accepted (ignored once the run is over).
+    pub fn toggle_pause(&mut self) -> bool {
+        if self.status != Status::Playing {
+            return false;
         }
-        let next = if self.level < MAX_LEVELS {
-            self.level + 1
-        } else {
-            1
-        };
-        *self = Self::with_level(fresh_seed(), next);
+        self.paused = !self.paused;
+        self.paused
     }
 
-    /// Score for a completed level: kills, leftover sun, and a time bonus.
+    /// Score rewards kills, leftover sun, wave progress, and survival time.
     pub fn score(&self) -> i32 {
-        let time_bonus = ((180.0 - self.elapsed).max(0.0) * 10.0) as i32;
-        self.killed as i32 * 100 + self.sun * 2 + time_bonus
+        self.killed as i32 * 100 + self.sun * 2 + self.wave as i32 * 250 + self.elapsed as i32 * 5
     }
 
     fn set_notice(&mut self, msg: impl Into<String>) {
@@ -360,13 +379,16 @@ impl Game {
         });
     }
 
-    /// Clear + fast time + no lawnmower used. Only wins earn stars.
+    /// Stars are awarded when the run ends: wave milestones + a clean defense.
     pub fn stars(&self) -> u8 {
-        if self.status != Status::Won {
+        if self.status != Status::Lost {
             return 0;
         }
-        let mut stars = 1;
-        if self.elapsed <= level_config(self.level).star_time {
+        let mut stars = 0;
+        if self.wave >= FIRST_STAR_WAVE {
+            stars += 1;
+        }
+        if self.wave >= SECOND_STAR_WAVE {
             stars += 1;
         }
         if self.lawnmowers.iter().all(|&ready| ready) {
@@ -377,7 +399,7 @@ impl Game {
 
     /// Remove a plant with a small sun refund. Returns true when one was removed.
     pub fn try_shovel(&mut self, row: usize, col: usize) -> bool {
-        if self.status != Status::Playing || row >= ROWS || col >= COLS {
+        if self.paused || self.status != Status::Playing || row >= ROWS || col >= COLS {
             return false;
         }
         let Some(i) = self
@@ -406,13 +428,16 @@ impl Game {
     }
 
     pub fn select(&mut self, kind: PlantKind) {
+        if self.paused || self.status != Status::Playing {
+            return;
+        }
         self.selected = kind;
         self.set_notice(format!("Selected {} ({} sun)", kind.name(), kind.cost()));
         self.events.push(GameEvent::Select);
     }
 
     pub fn try_plant(&mut self, row: usize, col: usize) {
-        if self.status != Status::Playing || row >= ROWS || col >= COLS {
+        if self.paused || self.status != Status::Playing || row >= ROWS || col >= COLS {
             return;
         }
         if self.plants.iter().any(|p| p.row == row && p.col == col) {
@@ -449,6 +474,9 @@ impl Game {
 
     /// Returns true when a falling sun was collected at this tile.
     pub fn collect_at(&mut self, row: usize, col: usize) -> bool {
+        if self.paused || self.status != Status::Playing {
+            return false;
+        }
         if let Some(i) = self
             .suns
             .iter()
@@ -474,6 +502,9 @@ impl Game {
 
     /// Keyboard fallback: collect the sun closest to the cursor.
     pub fn collect_nearest(&mut self) {
+        if self.paused || self.status != Status::Playing {
+            return;
+        }
         if self.suns.is_empty() {
             self.set_notice("No sun to collect yet");
             return;
@@ -503,6 +534,9 @@ impl Game {
     }
 
     pub fn update(&mut self, dt: f32) {
+        if self.paused || self.status != Status::Playing {
+            return;
+        }
         let mut expired = false;
         if let Some((_, t)) = &mut self.notice {
             *t -= dt;
@@ -533,9 +567,6 @@ impl Game {
             self.wave_warning = None;
         }
 
-        if self.status != Status::Playing {
-            return;
-        }
         self.elapsed += dt;
 
         // Suns falling from the sky.
@@ -679,39 +710,47 @@ impl Game {
             self.float(FloatKind::Kill, 100, x, row as f32 + 0.3);
         }
 
-        // Spawn waves: each level is a bit denser and faster than the last.
-        // Every fourth spawn is a small surge with an early warning banner.
+        // Endless spawning: every fourth spawn is a surge that starts the
+        // next wave. Each wave is a little faster, tougher, and more frequent.
         let cfg = level_config(self.level);
-        if self.spawned < cfg.zombies {
-            self.zombie_timer -= dt;
-            let surge_next =
-                (self.spawned + 1) % BIG_WAVE_EVERY == 0 && self.spawned + 2 <= cfg.zombies;
-            if !self.pending_big_wave && surge_next && self.zombie_timer <= 1.2 {
-                self.pending_big_wave = true;
-                self.wave_warning = Some(("BIG WAVE INCOMING!".to_string(), 1.2));
-                self.events.push(GameEvent::WaveWarning);
+        self.zombie_timer -= dt;
+        let surge_next = (self.spawned + 1) % BIG_WAVE_EVERY == 0;
+        if !self.pending_big_wave && surge_next && self.zombie_timer <= 1.2 {
+            self.pending_big_wave = true;
+            self.wave_warning = Some((format!("WAVE {} INCOMING!", self.wave + 1), 1.2));
+            self.events.push(GameEvent::WaveWarning);
+        }
+        if self.zombie_timer <= 0.0 {
+            let count = if self.pending_big_wave { 2 } else { 1 };
+            for _ in 0..count {
+                let row = self.rng.range(ROWS);
+                let hp = cfg.zombie_hp + self.wave as f32 * cfg.hp_growth;
+                let speed = (ZOMBIE_SPEED * cfg.speed_mul + self.wave as f32 * cfg.speed_growth)
+                    * self.rng.range_f32(0.85, 1.2);
+                self.zombies.push(Zombie {
+                    x: COLS as f32 - 0.1,
+                    row,
+                    hp,
+                    max_hp: hp,
+                    walk_phase: self.rng.range_f32(0.0, 2.0),
+                    walking: true,
+                    attack: EAT_INTERVAL,
+                    speed,
+                });
+                self.spawned += 1;
             }
-            if self.zombie_timer <= 0.0 {
-                let count = if self.pending_big_wave { 2 } else { 1 };
-                for _ in 0..count {
-                    let row = self.rng.range(ROWS);
-                    self.zombies.push(Zombie {
-                        x: COLS as f32 - 0.1,
-                        row,
-                        hp: cfg.zombie_hp,
-                        max_hp: cfg.zombie_hp,
-                        walk_phase: self.rng.range_f32(0.0, 2.0),
-                        walking: true,
-                        attack: EAT_INTERVAL,
-                        speed: ZOMBIE_SPEED * cfg.speed_mul * self.rng.range_f32(0.85, 1.2),
-                    });
-                    self.spawned += 1;
+            if self.pending_big_wave {
+                self.wave += 1;
+                if self.wave == FIRST_STAR_WAVE || self.wave == SECOND_STAR_WAVE {
+                    self.events.push(GameEvent::Milestone);
+                    self.set_notice(format!("Wave {} reached!", self.wave));
                 }
-                self.pending_big_wave = false;
-                self.wave_warning = None;
-                let gap = (cfg.spawn_base - self.spawned as f32 * 0.16).max(cfg.spawn_min);
-                self.zombie_timer += gap;
             }
+            self.pending_big_wave = false;
+            self.wave_warning = None;
+            let floor = (cfg.spawn_min * 0.6).max(0.9);
+            let gap = (cfg.spawn_base - self.wave as f32 * 0.18).max(floor);
+            self.zombie_timer += gap;
         }
 
         // A zombie crossing the left edge triggers that row's one-shot
@@ -761,16 +800,12 @@ impl Game {
 
         if lost {
             self.status = Status::Lost;
-            self.set_notice("A zombie reached your house!");
+            self.set_notice(format!(
+                "{} run ended at wave {}!",
+                level_name(self.level),
+                self.wave
+            ));
             self.events.push(GameEvent::Lose);
-        } else if self.spawned >= cfg.zombies && self.zombies.is_empty() {
-            self.status = Status::Won;
-            self.set_notice(if self.level == MAX_LEVELS {
-                "Campaign cleared!"
-            } else {
-                "Level cleared!"
-            });
-            self.events.push(GameEvent::Win);
         }
     }
 }
@@ -802,7 +837,7 @@ mod tests {
         let mut g = Game::new(2);
         g.try_plant(0, 0);
         // Prevent new waves from spawning during this isolated combat test.
-        g.spawned = level_config(g.level).zombies;
+        g.zombie_timer = 999.0;
         g.zombies.push(Zombie {
             x: 5.0,
             row: 0,
@@ -882,9 +917,8 @@ mod tests {
     }
 
     #[test]
-    fn clearing_the_last_zombie_wins_after_all_waves() {
+    fn killing_every_visible_zombie_does_not_end_an_endless_run() {
         let mut g = Game::new(5);
-        g.spawned = level_config(g.level).zombies;
         g.zombies.push(Zombie {
             x: 1.0,
             row: 0,
@@ -896,56 +930,48 @@ mod tests {
             speed: 0.0,
         });
         g.update(0.016);
-        assert_eq!(g.status, Status::Won);
+        assert_eq!(g.status, Status::Playing);
+        assert!(g.zombies.is_empty());
     }
 
     #[test]
-    fn levels_get_harder() {
+    fn difficulties_get_harder() {
         let a = level_config(1);
         let b = level_config(2);
         let c = level_config(3);
-        assert!(a.zombies < b.zombies && b.zombies < c.zombies);
         assert!(a.speed_mul < b.speed_mul && b.speed_mul < c.speed_mul);
         assert!(a.zombie_hp < b.zombie_hp && b.zombie_hp < c.zombie_hp);
+        assert!(a.hp_growth < b.hp_growth && b.hp_growth < c.hp_growth);
+        assert!(a.speed_growth < b.speed_growth && b.speed_growth < c.speed_growth);
         assert!(a.spawn_base > b.spawn_base && b.spawn_base > c.spawn_base);
     }
 
     #[test]
-    fn winning_advances_to_the_next_level() {
-        let mut g = Game::new(9);
-        g.status = Status::Won;
-        g.spawned = 3;
-        g.killed = 3;
-        g.next_level();
-
-        assert_eq!(g.level, 2);
-        assert_eq!(g.status, Status::Playing);
-        assert_eq!(g.spawned, 0);
-        assert_eq!(g.killed, 0);
-        assert_eq!(g.sun, level_config(2).start_sun);
-        assert!(g.plants.is_empty() && g.zombies.is_empty());
+    fn difficulty_names_and_unlock_waves_are_stable() {
+        assert_eq!(level_name(1), "EASY");
+        assert_eq!(level_name(2), "MEDIUM");
+        assert_eq!(level_name(3), "HARD");
+        assert_eq!(unlock_wave(1), 0);
+        assert_eq!(unlock_wave(2), 10);
+        assert_eq!(unlock_wave(3), 15);
     }
 
     #[test]
-    fn clearing_final_level_loops_back_to_level_one() {
+    fn restart_keeps_the_same_difficulty() {
         let mut g = Game::with_level(11, MAX_LEVELS);
-        g.status = Status::Won;
-        g.next_level();
-        assert_eq!(g.level, 1);
-    }
-
-    #[test]
-    fn next_level_is_ignored_until_a_win() {
-        let mut g = Game::new(12);
-        g.next_level();
-        assert_eq!(g.level, 1);
+        g.wave = 7;
+        g.killed = 12;
+        g.restart();
+        assert_eq!(g.level, MAX_LEVELS);
+        assert_eq!(g.wave, 1);
+        assert_eq!(g.killed, 0);
         assert_eq!(g.status, Status::Playing);
     }
 
     #[test]
     fn zombie_walk_phase_tracks_motion_not_chewing() {
         let mut g = Game::new(13);
-        g.spawned = level_config(g.level).zombies;
+        g.zombie_timer = 999.0;
         g.zombies.push(Zombie {
             x: 5.0,
             row: 1,
@@ -989,7 +1015,7 @@ mod tests {
     #[test]
     fn dying_zombie_emits_a_death_burst() {
         let mut g = Game::new(15);
-        g.spawned = level_config(g.level).zombies;
+        g.zombie_timer = 999.0;
         g.zombies.push(Zombie {
             x: 3.0,
             row: 2,
@@ -1027,36 +1053,60 @@ mod tests {
     }
 
     #[test]
-    fn stars_need_speed_and_an_untouched_lawnmower_set() {
+    fn stars_come_from_wave_milestones_and_a_clean_defense() {
         let mut g = Game::new(17);
-        g.status = Status::Won;
-        g.elapsed = level_config(1).star_time - 1.0;
-        assert_eq!(g.stars(), 3);
+        g.status = Status::Lost;
+        g.wave = 1;
+        assert_eq!(g.stars(), 1);
 
-        g.lawnmowers[0] = false;
+        g.wave = FIRST_STAR_WAVE;
         assert_eq!(g.stars(), 2);
 
-        g.elapsed = level_config(1).star_time + 1.0;
+        g.lawnmowers[0] = false;
         assert_eq!(g.stars(), 1);
+
+        g.wave = SECOND_STAR_WAVE;
+        assert_eq!(g.stars(), 2);
+
+        g.lawnmowers = [true; ROWS];
+        assert_eq!(g.stars(), 3);
 
         g.status = Status::Playing;
         assert_eq!(g.stars(), 0);
     }
 
     #[test]
-    fn big_wave_warns_then_spawns_two_zombies() {
+    fn big_wave_warns_then_starts_the_next_wave() {
         let mut g = Game::new(18);
         g.spawned = BIG_WAVE_EVERY - 1;
         g.zombie_timer = 0.5;
 
         g.update(0.1);
         assert!(g.wave_warning.is_some());
+        assert_eq!(g.wave_warning.as_ref().unwrap().0, "WAVE 2 INCOMING!");
         assert!(g.events.contains(&GameEvent::WaveWarning));
 
         g.update(0.5);
         assert_eq!(g.spawned, BIG_WAVE_EVERY + 1);
         assert_eq!(g.zombies.len(), 2);
+        assert_eq!(g.wave, 2);
         assert!(g.wave_warning.is_none());
+
+        g.zombie_timer = 0.0;
+        g.update(0.016);
+        assert!(g.spawned > BIG_WAVE_EVERY + 1);
+    }
+
+    #[test]
+    fn wave_ten_emits_a_milestone_event() {
+        let mut g = Game::new(24);
+        g.wave = FIRST_STAR_WAVE - 1;
+        g.pending_big_wave = true;
+        g.zombie_timer = 0.0;
+
+        g.update(0.016);
+        assert_eq!(g.wave, FIRST_STAR_WAVE);
+        assert!(g.events.contains(&GameEvent::Milestone));
     }
 
     #[test]
@@ -1143,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn doing_nothing_loses_instead_of_winning_by_mowers() {
+    fn doing_nothing_loses_before_reaching_late_waves() {
         for level in 1..=MAX_LEVELS {
             let mut g = Game::new((30 + level) as u64);
             for _ in 0..6000 {
@@ -1154,6 +1204,44 @@ mod tests {
             }
             assert_eq!(g.status, Status::Lost, "level {level} should not be free");
         }
+    }
+
+    #[test]
+    fn pause_freezes_time_spawns_and_blocks_actions() {
+        let mut g = Game::new(25);
+        g.try_plant(0, 0);
+        let sun = g.sun;
+        let plants = g.plants.len();
+        let selected = g.selected;
+        let elapsed = g.elapsed;
+        let spawned = g.spawned;
+        let effect_life = g.effects.first().map(|e| e.life);
+
+        assert!(g.toggle_pause());
+        g.update(5.0);
+        assert_eq!(g.elapsed, elapsed);
+        assert_eq!(g.spawned, spawned);
+        assert_eq!(g.effects.first().map(|e| e.life), effect_life);
+
+        g.select(PlantKind::Sunflower);
+        g.try_plant(1, 1);
+        assert!(!g.try_shovel(0, 0));
+        assert!(!g.collect_at(0, 0));
+        assert_eq!(g.selected, selected);
+        assert_eq!(g.plants.len(), plants);
+        assert_eq!(g.sun, sun);
+
+        assert!(!g.toggle_pause());
+        g.update(0.1);
+        assert!(g.elapsed > elapsed);
+    }
+
+    #[test]
+    fn pause_is_ignored_after_the_run_ends() {
+        let mut g = Game::new(26);
+        g.status = Status::Lost;
+        assert!(!g.toggle_pause());
+        assert!(!g.paused);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Start menu, level select, and help screen.
 
-use crate::game::MAX_LEVELS;
+use crate::game::{MAX_LEVELS, level_name, unlock_wave};
 use crate::pixel_art::{Sprite, Sprites};
 use crate::records::Records;
 use crate::render::fmt_time;
@@ -89,7 +89,7 @@ impl Menu {
     }
 
     pub fn is_locked(level: usize, records: &Records) -> bool {
-        level > 1 && records.get(level - 1).best_time.is_none()
+        level > 1 && records.get(level - 1).best_wave < unlock_wave(level)
     }
 
     pub fn activate(&mut self, records: &Records) -> MenuResult {
@@ -110,7 +110,11 @@ impl Menu {
             },
             Screen::LevelSelect => {
                 if Self::is_locked(self.level, records) {
-                    self.notice = Some(format!("Clear level {} first", self.level - 1));
+                    self.notice = Some(format!(
+                        "Reach wave {} on {} first",
+                        unlock_wave(self.level),
+                        level_name(self.level - 1)
+                    ));
                     MenuResult::None
                 } else {
                     MenuResult::Start(self.level)
@@ -250,18 +254,20 @@ fn draw_main(menu: &Menu, records: &Records) {
     let start = (w - total) / 2.0;
     for level in 1..=MAX_LEVELS {
         let best = records.get(level);
-        let record = match best.best_time {
-            Some(t) => format!("{} / {} pts", fmt_time(t), best.best_score),
-            None => "--:-- / 0 pts".to_string(),
+        let record = if best.best_wave > 0 {
+            format!(
+                "W{} {} / {} pts",
+                best.best_wave,
+                fmt_time(best.longest_time),
+                best.best_score
+            )
+        } else {
+            "W0 --:-- / 0 pts".to_string()
         };
         let cx = start + (level - 1) as f32 * (card_w + gap) + card_w / 2.0;
-        let accent = if best.best_time.is_some() {
-            GREEN
-        } else {
-            GREY
-        };
+        let accent = if best.best_wave > 0 { GREEN } else { GREY };
         text_centered(
-            &format!("LV{level}  *{}/3", best.stars),
+            &format!("{}  *{}/3", level_name(level), best.stars),
             cx,
             MAIN_RECORD_Y,
             BODY_SIZE,
@@ -301,7 +307,7 @@ fn draw_level_select(menu: &Menu, records: &Records, sprites: &Sprites) {
         draw_rectangle_lines(r.x, r.y, r.w, r.h, 3.0, accent);
         let cx = r.x + r.w / 2.0;
         text_centered(
-            &format!("LEVEL {level}"),
+            level_name(level),
             cx,
             r.y + LEVEL_TITLE_Y,
             HEAD_SIZE,
@@ -316,18 +322,18 @@ fn draw_level_select(menu: &Menu, records: &Records, sprites: &Sprites) {
         };
         sprites.draw_centered(icon, cx, r.y + LEVEL_ICON_Y, LEVEL_ICON_SIZE);
         let best = records.get(level);
-        let record = match best.best_time {
-            Some(t) => format!("BEST {} / {}", fmt_time(t), best.best_score),
-            None => "NO RECORD YET".to_string(),
+        let record = if best.best_wave > 0 {
+            format!("BEST W{} / {} pts", best.best_wave, best.best_score)
+        } else {
+            "NO RECORD YET".to_string()
+        };
+        let surviving = if best.best_wave > 0 {
+            format!("*{}/3  Surv {}", best.stars, fmt_time(best.longest_time))
+        } else {
+            "*0/3  Surv --:--".to_string()
         };
         text_centered(&record, cx, r.y + LEVEL_RECORD_Y, BODY_SIZE, WHITE);
-        text_centered(
-            &format!("*{}/3 STARS", best.stars),
-            cx,
-            r.y + LEVEL_STARS_Y,
-            BODY_SIZE,
-            WHITE,
-        );
+        text_centered(&surviving, cx, r.y + LEVEL_STARS_Y, BODY_SIZE, WHITE);
         text_centered(
             if locked { "LOCKED" } else { "READY" },
             cx,
@@ -364,8 +370,8 @@ fn draw_help() {
         "Space / Enter / click  -  plant on the tile",
         "X / right-click  -  shovel a plant (+25 sun)",
         "C / click a sun  -  collect sun",
-        "M sound on/off   N restart campaign",
-        "Survive all 3 levels before a zombie gets home",
+        "M sound   P pause/resume   N restart campaign",
+        "Survive endless waves; stars at wave 10/20 + no mower",
         "Esc menu   Q quit",
     ];
     for (i, line) in lines.iter().enumerate() {
@@ -418,14 +424,20 @@ mod tests {
     }
 
     #[test]
-    fn level_two_starts_locked_and_unlocks_after_level_one() {
+    fn medium_unlocks_at_wave_ten_and_hard_at_wave_fifteen() {
         let path = temp_path("zpg-menu-unlock.txt");
         let mut records = Records::from_path(path);
         assert!(Menu::is_locked(2, &records));
 
-        records.submit(1, 42.0, 1234, 3);
+        records.submit(1, 9, 42.0, 1234, 3);
+        assert!(Menu::is_locked(2, &records));
+
+        records.submit(1, 10, 50.0, 1500, 3);
         assert!(!Menu::is_locked(2, &records));
         assert!(Menu::is_locked(3, &records));
+
+        records.submit(2, 15, 60.0, 2400, 2);
+        assert!(!Menu::is_locked(3, &records));
     }
 
     #[test]
@@ -468,7 +480,7 @@ mod tests {
         assert!(card.y + LEVEL_STATUS_Y <= card.y + card.h);
 
         // Conservative 12 px advance at 16 px still fits the 300 px card.
-        let longest = "BEST 99:59 / 99999";
+        let longest = "BEST W99 / 99999 pts";
         assert!(longest.len() as f32 * 12.0 < card.w);
 
         // Main-menu summary lines must sit inside the green strip.

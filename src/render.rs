@@ -1,6 +1,6 @@
 use crate::game::{
-    COLS, Effect, EffectKind, FloatKind, Game, MAX_LEVELS, Plant, PlantKind, ROWS, Status, Zombie,
-    level_config,
+    BIG_WAVE_EVERY, COLS, Effect, EffectKind, FloatKind, Game, Plant, PlantKind, ROWS, Status,
+    Zombie, level_name,
 };
 use crate::pixel_art::{Sprite, Sprites};
 use crate::records::{Improvement, Records};
@@ -469,6 +469,40 @@ fn draw_wave_warning(g: &Game, l: &Layout, t: f32) {
     );
 }
 
+fn draw_pause_overlay(l: &Layout) {
+    let w = screen_width();
+    let h = screen_height();
+    draw_rectangle(0.0, 0.0, w, h, with_alpha(col(6, 9, 14), 0.72));
+
+    let panel_w = (w * 0.56).clamp(360.0, 640.0);
+    let panel_h = 192.0;
+    let cx = w / 2.0;
+    let cy = l.board_y + l.board_h / 2.0;
+    let x = cx - panel_w / 2.0;
+    let y = cy - panel_h / 2.0;
+    draw_rectangle(x, y, panel_w, panel_h, col(18, 24, 32));
+    draw_rectangle_lines(x, y, panel_w, panel_h, 3.0, GREEN);
+
+    // Two chunky bars read as "pause" even without the text.
+    draw_rectangle(cx - 26.0, y + 22.0, 12.0, 30.0, YELLOW);
+    draw_rectangle(cx + 14.0, y + 22.0, 12.0, 30.0, YELLOW);
+    text_centered("PAUSED", cx, y + 96.0, FONT_TITLE, YELLOW);
+    text_centered(
+        "Time, waves, and actions are frozen",
+        cx,
+        y + 132.0,
+        FONT_BODY,
+        WHITE,
+    );
+    text_centered(
+        "P resume  |  Esc menu  |  Q quit",
+        cx,
+        y + 166.0,
+        FONT_SMALL,
+        GREY,
+    );
+}
+
 fn draw_background(l: &Layout) {
     let w = screen_width();
     let h = screen_height();
@@ -513,21 +547,25 @@ fn draw_cards(sprites: &Sprites, g: &Game, l: &Layout) {
 
 fn draw_hud(g: &Game, l: &Layout, records: &Records, audio_on: bool) {
     let w = screen_width();
-    let cfg = level_config(g.level);
     let best = records.get(g.level);
-    let best_text = match best.best_time {
-        Some(t) => format!("{} / {} / *{}", fmt_time(t), best.best_score, best.stars),
-        None => "--:-- / 0 / *0".to_string(),
+    let best_text = if best.best_wave > 0 {
+        format!(
+            "W{} {} / {} / *{}",
+            best.best_wave,
+            fmt_time(best.longest_time),
+            best.best_score,
+            best.stars
+        )
+    } else {
+        "--:-- / 0 / *0".to_string()
     };
     // draw_text takes the baseline as y, so keep the title's glyphs on screen.
     text_centered("PLANTS vs ZOMBIES", w / 2.0, 48.0, FONT_TITLE, YELLOW);
     let hud = format!(
-        "Level {}/{}   Sun {}   Zombie {}/{}   Killed {}   {}   Best {}   M:{}",
-        g.level,
-        MAX_LEVELS,
+        "{}   Sun {}   Wave {}   Killed {}   Survived {}   Best {}   M:{}",
+        level_name(g.level),
         g.sun,
-        g.spawned,
-        cfg.zombies,
+        g.wave,
         g.killed,
         fmt_time(g.elapsed),
         best_text,
@@ -539,7 +577,7 @@ fn draw_hud(g: &Game, l: &Layout, records: &Records, audio_on: bool) {
     let seg_gap = 3.0;
     let total_w = 20.0 * (seg_w + seg_gap) - seg_gap;
     let start_x = w / 2.0 - total_w / 2.0;
-    let filled = g.spawned * 20 / cfg.zombies;
+    let filled = (g.spawned % BIG_WAVE_EVERY) * 20 / BIG_WAVE_EVERY;
     for i in 0..20 {
         let x = start_x + i as f32 * (seg_w + seg_gap);
         draw_rectangle(
@@ -563,8 +601,7 @@ fn draw_hud(g: &Game, l: &Layout, records: &Records, audio_on: bool) {
 }
 
 fn draw_result(g: &Game, l: &Layout, records: &Records, improvement: Improvement) {
-    let won = g.status == Status::Won;
-    let accent = if won { GREEN } else { RED };
+    let accent = RED;
     let h = screen_height();
     let box_y = l.board_y + l.board_h + 12.0;
     let box_h = (h - box_y - 12.0).min(112.0);
@@ -574,39 +611,31 @@ fn draw_result(g: &Game, l: &Layout, records: &Records, improvement: Improvement
     let cx = screen_width() / 2.0;
     draw_rectangle(l.board_x, box_y, l.board_w, box_h, col(20, 20, 30));
     draw_rectangle_lines(l.board_x, box_y, l.board_w, box_h, 3.0, accent);
-    let title = if !won {
-        "GAME OVER"
-    } else if g.level == MAX_LEVELS {
-        "ALL LEVELS CLEARED!"
-    } else {
-        "LEVEL CLEARED!"
-    };
-    text_centered(title, cx, box_y + 34.0, FONT_BODY, accent);
-    let cfg = level_config(g.level);
+    text_centered("GAME OVER", cx, box_y + 34.0, FONT_BODY, accent);
     let detail = format!(
-        "Level {}/{}   Kills {}/{}   Time {}   Score {}",
-        g.level,
-        MAX_LEVELS,
+        "{}   Wave {}   Killed {}   Survived {}   Score {}",
+        level_name(g.level),
+        g.wave,
         g.killed,
-        cfg.zombies,
         fmt_time(g.elapsed),
         g.score()
     );
     text_centered(&detail, cx, box_y + 58.0, FONT_SMALL, accent);
 
     let best = records.get(g.level);
-    let record = match best.best_time {
-        Some(t) => format!("Best {} / {} pts", fmt_time(t), best.best_score),
-        None => "No record yet".to_string(),
+    let record = if best.best_wave > 0 {
+        format!("Best W{} / {} pts", best.best_wave, best.best_score)
+    } else {
+        "No record yet".to_string()
     };
     let record = format!("{record}   Stars {}/3", g.stars());
-    let record = if won && (improvement.time || improvement.score || improvement.stars) {
-        let what = if improvement.time && improvement.score {
-            "NEW RECORD!"
+    let record = if improvement.wave || improvement.time || improvement.score || improvement.stars {
+        let what = if improvement.wave {
+            "NEW BEST WAVE!"
+        } else if improvement.time {
+            "NEW LONGEST RUN!"
         } else if improvement.stars {
             "NEW STARS!"
-        } else if improvement.time {
-            "NEW BEST TIME!"
         } else {
             "NEW HIGH SCORE!"
         };
@@ -616,14 +645,13 @@ fn draw_result(g: &Game, l: &Layout, records: &Records, improvement: Improvement
     };
     text_centered(&record, cx, box_y + 80.0, FONT_SMALL, accent);
 
-    let footer = if !won {
-        "R retry  |  N new game  |  Esc menu  |  Q quit"
-    } else if g.level == MAX_LEVELS {
-        "Enter play again  |  R replay  |  Esc menu  |  Q quit"
-    } else {
-        "Enter next level  |  R replay  |  Esc menu  |  Q quit"
-    };
-    text_centered(footer, cx, box_y + 102.0, FONT_SMALL, accent);
+    text_centered(
+        "R retry  |  N new game  |  Esc menu  |  Q quit",
+        cx,
+        box_y + 102.0,
+        FONT_SMALL,
+        accent,
+    );
 }
 
 pub fn draw_game(
@@ -692,7 +720,7 @@ pub fn draw_game(
     draw_wave_warning(g, &l, t);
 
     if g.status == Status::Playing {
-        let hints = "1/2/3 pick  |  Arrows move  |  Space plant  |  X shovel  |  C sun  |  M sound  |  Esc menu";
+        let hints = "1/2/3 pick | Arrows move | Space plant | X shovel | C sun | P pause | M sound | Esc menu";
         text_centered(
             hints,
             screen_width() / 2.0,
@@ -714,6 +742,9 @@ pub fn draw_game(
     } else {
         // The result box already says what happened, so no popup here.
         draw_result(g, &l, records, improvement);
+    }
+    if g.paused && g.status == Status::Playing {
+        draw_pause_overlay(&l);
     }
     let _ = audio_on;
 }

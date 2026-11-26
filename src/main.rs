@@ -94,6 +94,16 @@ fn handle_game_input(g: &mut Game, audio: &mut Audio) -> GameInput {
     if is_key_pressed(KeyCode::Q) {
         return GameInput::Quit;
     }
+    if is_key_pressed(KeyCode::P) && g.status == Status::Playing {
+        let paused = g.toggle_pause();
+        audio.play(if paused { Sound::Pause } else { Sound::Select });
+    }
+    if is_key_pressed(KeyCode::M) {
+        audio.toggle_mute();
+    }
+    if g.paused {
+        return GameInput::Continue;
+    }
     if is_key_pressed(KeyCode::Key1) {
         g.select(PlantKind::Sunflower);
     }
@@ -123,19 +133,12 @@ fn handle_game_input(g: &mut Game, audio: &mut Audio) -> GameInput {
         let (r, c) = g.cursor;
         g.try_shovel(r, c);
     }
-    if is_key_pressed(KeyCode::Enter) {
-        if g.status == Status::Won {
-            g.next_level();
-        } else if g.status == Status::Playing {
-            let (r, c) = g.cursor;
-            g.try_plant(r, c);
-        }
+    if is_key_pressed(KeyCode::Enter) && g.status == Status::Playing {
+        let (r, c) = g.cursor;
+        g.try_plant(r, c);
     }
     if is_key_pressed(KeyCode::C) {
         g.collect_nearest();
-    }
-    if is_key_pressed(KeyCode::M) {
-        audio.toggle_mute();
     }
     if is_key_pressed(KeyCode::N) {
         g.restart_campaign();
@@ -211,9 +214,10 @@ async fn main() {
                     game.update(dt);
                     let events: Vec<GameEvent> = game.events.drain(..).collect();
                     for event in events {
-                        if event == GameEvent::Win {
+                        if event == GameEvent::Lose {
                             last_improvement = records.submit(
                                 game.level,
+                                game.wave,
                                 game.elapsed,
                                 game.score(),
                                 game.stars(),
@@ -229,12 +233,14 @@ async fn main() {
                             GameEvent::Sun => Sound::Sun,
                             GameEvent::WaveWarning => Sound::WaveWarning,
                             GameEvent::Lawnmower => Sound::Lawnmower,
-                            GameEvent::Win => Sound::Win,
+                            GameEvent::Milestone => Sound::Milestone,
                             GameEvent::Lose => Sound::Lose,
                         };
                         audio.play(sound);
                     }
-                    audio.tick(dt, game.zombies.len() >= 3 || game.elapsed > 25.0);
+                    if !game.paused {
+                        audio.tick(dt, game.zombies.len() >= 3 || game.elapsed > 25.0);
+                    }
                 }
             },
         }

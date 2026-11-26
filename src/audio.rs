@@ -19,13 +19,14 @@ pub enum Sound {
     Select,
     Plant,
     Shovel,
+    Pause,
     Shoot,
     Hit,
     ZombieDie,
     Sun,
     WaveWarning,
     Lawnmower,
-    Win,
+    Milestone,
     Lose,
 }
 
@@ -76,6 +77,10 @@ impl Audio {
             Sound::Select => tone(660.0, 0.06, 0.05, Wave::Square),
             Sound::Plant => sweep(220.0, 90.0, 0.14, 0.10, Wave::Triangle),
             Sound::Shovel => sweep(420.0, 180.0, 0.12, 0.08, Wave::Triangle),
+            Sound::Pause => concat(vec![
+                tone(392.0, 0.10, 0.06, Wave::Triangle),
+                tone(261.63, 0.16, 0.06, Wave::Triangle),
+            ]),
             Sound::Shoot => sweep(900.0, 420.0, 0.07, 0.06, Wave::Sine),
             Sound::Hit => concat(vec![
                 noise(0.07, 0.07, &mut rng),
@@ -95,11 +100,10 @@ impl Audio {
                 noise(0.28, 0.09, &mut rng),
                 sweep(180.0, 60.0, 0.35, 0.10, Wave::Saw),
             ]),
-            Sound::Win => concat(vec![
-                tone(523.25, 0.12, 0.07, Wave::Triangle),
-                tone(659.25, 0.12, 0.07, Wave::Triangle),
-                tone(783.99, 0.12, 0.07, Wave::Triangle),
-                tone(1046.5, 0.25, 0.07, Wave::Triangle),
+            Sound::Milestone => concat(vec![
+                tone(523.25, 0.10, 0.07, Wave::Triangle),
+                tone(659.25, 0.10, 0.07, Wave::Triangle),
+                tone(783.99, 0.10, 0.07, Wave::Triangle),
             ]),
             Sound::Lose => concat(vec![
                 tone(392.0, 0.18, 0.07, Wave::Saw),
