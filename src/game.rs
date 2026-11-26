@@ -715,41 +715,42 @@ impl Game {
         }
 
         // A zombie crossing the left edge triggers that row's one-shot
-        // lawnmower. Only a second escape in the same row loses the game.
-        let escaped: Vec<usize> = self
+        // lawnmower. It only catches the zombie that actually reached the
+        // edge; other zombies still marching in that row survive. A second
+        // escape in the same row loses the game, so mowers are a safety net
+        // rather than a free way to clear every wave.
+        let mut escaped_rows: Vec<usize> = self
             .zombies
             .iter()
             .filter(|z| z.x < 0.0)
             .map(|z| z.row)
             .collect();
+        escaped_rows.sort_unstable();
+        escaped_rows.dedup();
         let mut lost = false;
-        for row in escaped {
+        for row in escaped_rows {
             if !self.lawnmowers[row] {
                 lost = true;
                 continue;
             }
+            let Some(i) = self.zombies.iter().position(|z| z.row == row && z.x < 0.0) else {
+                continue;
+            };
+            let x = self.zombies[i].x + 0.5;
+            self.zombies.remove(i);
             self.lawnmowers[row] = false;
-            let victims: Vec<f32> = self
-                .zombies
-                .iter()
-                .filter(|z| z.row == row)
-                .map(|z| z.x + 0.5)
-                .collect();
-            self.zombies.retain(|z| z.row != row);
-            for x in victims {
-                self.killed += 1;
-                self.events.push(GameEvent::ZombieDie);
-                self.effects
-                    .push(effect(EffectKind::Death, x, row as f32 + 0.5));
-                self.float(FloatKind::Kill, 100, x, row as f32 + 0.3);
-            }
+            self.killed += 1;
+            self.events.push(GameEvent::ZombieDie);
+            self.effects
+                .push(effect(EffectKind::Death, x, row as f32 + 0.5));
+            self.float(FloatKind::Kill, 100, x, row as f32 + 0.3);
             self.mower_runs.push(MowerRun {
                 row,
                 x: -0.6,
                 life: 1.0,
             });
             self.events.push(GameEvent::Lawnmower);
-            self.set_notice(format!("Lawnmower cleared row {}!", row + 1));
+            self.set_notice(format!("Lawnmower caught a zombie in row {}!", row + 1));
         }
         for run in &mut self.mower_runs {
             run.x += MOWER_SPEED * dt;
@@ -1091,6 +1092,68 @@ mod tests {
         });
         g.update(0.016);
         assert_eq!(g.status, Status::Lost);
+    }
+
+    #[test]
+    fn lawnmower_only_catches_the_zombie_that_crossed() {
+        let mut g = Game::new(21);
+        for x in [-0.05, 4.0] {
+            g.zombies.push(Zombie {
+                x,
+                row: 2,
+                hp: ZOMBIE_HP,
+                max_hp: ZOMBIE_HP,
+                walk_phase: 0.0,
+                walking: false,
+                attack: EAT_INTERVAL,
+                speed: 0.0,
+            });
+        }
+
+        g.update(0.016);
+        assert!(!g.lawnmowers[2]);
+        assert_eq!(g.zombies.len(), 1);
+        assert!((g.zombies[0].x - 4.0).abs() < 0.01);
+        assert_eq!(g.killed, 1);
+        assert_eq!(g.status, Status::Playing);
+    }
+
+    #[test]
+    fn two_escapes_in_one_row_beat_a_single_mower() {
+        let mut g = Game::new(22);
+        for x in [-0.2, -0.1] {
+            g.zombies.push(Zombie {
+                x,
+                row: 1,
+                hp: ZOMBIE_HP,
+                max_hp: ZOMBIE_HP,
+                walk_phase: 0.0,
+                walking: false,
+                attack: EAT_INTERVAL,
+                speed: 0.0,
+            });
+        }
+
+        g.update(0.016);
+        assert_eq!(g.zombies.len(), 1);
+        assert_eq!(g.status, Status::Playing);
+
+        g.update(0.016);
+        assert_eq!(g.status, Status::Lost);
+    }
+
+    #[test]
+    fn doing_nothing_loses_instead_of_winning_by_mowers() {
+        for level in 1..=MAX_LEVELS {
+            let mut g = Game::new((30 + level) as u64);
+            for _ in 0..6000 {
+                g.update(0.05);
+                if g.status != Status::Playing {
+                    break;
+                }
+            }
+            assert_eq!(g.status, Status::Lost, "level {level} should not be free");
+        }
     }
 
     #[test]

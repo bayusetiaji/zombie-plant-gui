@@ -11,6 +11,19 @@ const HEAD_SIZE: f32 = 32.0;
 const BODY_SIZE: f32 = 16.0;
 const ROW_SIZE: f32 = 24.0;
 
+// Level card rows. Splitting the record into two short lines keeps the
+// Silkscreen glyphs inside the 300 px card.
+const LEVEL_TITLE_Y: f32 = 38.0;
+const LEVEL_ICON_Y: f32 = 90.0;
+const LEVEL_ICON_SIZE: f32 = 60.0;
+const LEVEL_RECORD_Y: f32 = 142.0;
+const LEVEL_STARS_Y: f32 = 164.0;
+const LEVEL_STATUS_Y: f32 = 184.0;
+
+// Main-menu progress lines sit inside the green strip (72%-86% of height).
+const MAIN_RECORD_Y: f32 = 550.0;
+const MAIN_RECORD_GAP: f32 = 28.0;
+
 fn col(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgba(r, g, b, 255)
 }
@@ -237,25 +250,29 @@ fn draw_main(menu: &Menu, records: &Records) {
     let start = (w - total) / 2.0;
     for level in 1..=MAX_LEVELS {
         let best = records.get(level);
-        let text = match best.best_time {
-            Some(t) => format!(
-                "LV{level}  *{}/3  {} / {} pts",
-                best.stars,
-                fmt_time(t),
-                best.best_score
-            ),
-            None => format!("LV{level}  *0/3  --:-- / 0 pts"),
+        let record = match best.best_time {
+            Some(t) => format!("{} / {} pts", fmt_time(t), best.best_score),
+            None => "--:-- / 0 pts".to_string(),
+        };
+        let cx = start + (level - 1) as f32 * (card_w + gap) + card_w / 2.0;
+        let accent = if best.best_time.is_some() {
+            GREEN
+        } else {
+            GREY
         };
         text_centered(
-            &text,
-            start + (level - 1) as f32 * (card_w + gap) + card_w / 2.0,
-            512.0,
+            &format!("LV{level}  *{}/3", best.stars),
+            cx,
+            MAIN_RECORD_Y,
             BODY_SIZE,
-            if best.best_time.is_some() {
-                GREEN
-            } else {
-                GREY
-            },
+            accent,
+        );
+        text_centered(
+            &record,
+            cx,
+            MAIN_RECORD_Y + MAIN_RECORD_GAP,
+            BODY_SIZE,
+            accent,
         );
     }
     text_centered(
@@ -282,10 +299,11 @@ fn draw_level_select(menu: &Menu, records: &Records, sprites: &Sprites) {
         };
         draw_rectangle(r.x, r.y, r.w, r.h, col(26, 38, 36));
         draw_rectangle_lines(r.x, r.y, r.w, r.h, 3.0, accent);
+        let cx = r.x + r.w / 2.0;
         text_centered(
             &format!("LEVEL {level}"),
-            r.x + r.w / 2.0,
-            r.y + 40.0,
+            cx,
+            r.y + LEVEL_TITLE_Y,
             HEAD_SIZE,
             accent,
         );
@@ -296,22 +314,24 @@ fn draw_level_select(menu: &Menu, records: &Records, sprites: &Sprites) {
         } else {
             Sprite::Wallnut
         };
-        sprites.draw_centered(icon, r.x + r.w / 2.0, r.y + 98.0, 64.0);
+        sprites.draw_centered(icon, cx, r.y + LEVEL_ICON_Y, LEVEL_ICON_SIZE);
         let best = records.get(level);
-        let detail = match best.best_time {
-            Some(t) => format!(
-                "BEST {} / {} pts  *{}/3",
-                fmt_time(t),
-                best.best_score,
-                best.stars
-            ),
-            None => "NO RECORD YET  *0/3".to_string(),
+        let record = match best.best_time {
+            Some(t) => format!("BEST {} / {}", fmt_time(t), best.best_score),
+            None => "NO RECORD YET".to_string(),
         };
-        text_centered(&detail, r.x + r.w / 2.0, r.y + 150.0, BODY_SIZE, WHITE);
+        text_centered(&record, cx, r.y + LEVEL_RECORD_Y, BODY_SIZE, WHITE);
+        text_centered(
+            &format!("*{}/3 STARS", best.stars),
+            cx,
+            r.y + LEVEL_STARS_Y,
+            BODY_SIZE,
+            WHITE,
+        );
         text_centered(
             if locked { "LOCKED" } else { "READY" },
-            r.x + r.w / 2.0,
-            r.y + 178.0,
+            cx,
+            r.y + LEVEL_STATUS_Y,
             BODY_SIZE,
             accent,
         );
@@ -441,7 +461,20 @@ mod tests {
         assert!(baseline <= back.y + back.h);
 
         let card = level_rect_at(1280.0, 1);
-        assert!(40.0 - HEAD_SIZE >= 0.0);
-        assert!(card.y + 178.0 <= card.y + card.h);
+        assert!(LEVEL_TITLE_Y - HEAD_SIZE >= 0.0);
+        assert!(LEVEL_RECORD_Y - BODY_SIZE >= LEVEL_ICON_Y + LEVEL_ICON_SIZE / 2.0);
+        assert!(LEVEL_STARS_Y - BODY_SIZE >= LEVEL_RECORD_Y);
+        assert!(LEVEL_STATUS_Y - BODY_SIZE >= LEVEL_STARS_Y);
+        assert!(card.y + LEVEL_STATUS_Y <= card.y + card.h);
+
+        // Conservative 12 px advance at 16 px still fits the 300 px card.
+        let longest = "BEST 99:59 / 99999";
+        assert!(longest.len() as f32 * 12.0 < card.w);
+
+        // Main-menu summary lines must sit inside the green strip.
+        let strip_top = 720.0 * 0.72;
+        let strip_bottom = 720.0 * 0.86;
+        assert!(MAIN_RECORD_Y - BODY_SIZE >= strip_top);
+        assert!(MAIN_RECORD_Y + MAIN_RECORD_GAP <= strip_bottom);
     }
 }

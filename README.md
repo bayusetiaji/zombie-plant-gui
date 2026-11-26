@@ -55,7 +55,7 @@ Saat game dibuka, muncul menu dengan empat pilihan: **Start Game**, **Level Sele
 - **Preview tanam**: petak yang ditunjuk mouse (atau kursor keyboard) menampilkan bayangan tanaman; hijau jika bisa ditanam, merah jika terisi/sun kurang.
 - **Angka melayang** `+40`, `-100`, dan `+100` muncul saat mengumpulkan matahari, menanam, dan membunuh zombie. Tanaman juga bereaksi: Sunflower sedikit membesar, Peashooter mundur saat menembak, dan Wallnut retak sesuai HP.
 - **Wave besar**: setiap spawn ke-4 dientai banner `BIG WAVE INCOMING!` dan dua zombie sekaligus, supaya ada ritme tenang → persiapan → serangan.
-- **Lawnmower sekali pakai per baris**: jika zombie lolos ke ujung kiri, mesin pemotong menyapu bersih baris itu. Escaped kedua di baris yang sama tetap kalah.
+- **Lawnmower sekali pakai per baris**: jika zombie lolos ke ujung kiri, mesin pemotong hanya menangkap zombie yang benar-benar sampai ke tepi. Zombie lain yang masih berjalan di baris itu tetap hidup, jadi lawnmower bukan jalan pintas menang; escape kedua di baris yang sama tetap kalah.
 - **Sistem bintang**: 1 bintang untuk clear, +1 jika selesai di bawah target waktu, +1 jika tidak memakai lawnmower. Rekor bintang tersimpan bersama waktu/skor dan ditampilkan di menu serta kotak hasil.
 - Tanaman bisa dicabut dengan `X`/klik kanan dan mendapat **refund 25 sun**, jadi salah tanam tidak langsung merusak run.
 - Generator gambar eksternal tidak dipakai: sprite dibuat dari peta karakter + palet warna langsung di `src/pixel_art.rs`, jadi tetap bisa diedit sebagai teks.
