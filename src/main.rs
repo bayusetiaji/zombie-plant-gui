@@ -33,7 +33,7 @@ fn window_conf() -> Conf {
         window_title: "Zombie Plant - GUI".to_owned(),
         window_width: 1280,
         window_height: 720,
-        window_resizable: true,
+        window_resizable: false,
         high_dpi: true,
         ..Default::default()
     }

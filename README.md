@@ -12,7 +12,7 @@ Logika game dipakai ulang dari versi terminal, sementara tampilannya memakai **s
 cargo run
 ```
 
-Jendela awal **1280×720** dan bisa di-resize. Butuh kartu grafis + OpenGL yang tersedia.
+Jendela tetap **1280×720**, tidak bisa di-resize, dan tombol maximize tidak tersedia. Butuh kartu grafis + OpenGL yang tersedia.
 Audio memakai `rodio`; jika tidak ada perangkat audio, game tetap berjalan tanpa suara.
 
 Build rilis:
