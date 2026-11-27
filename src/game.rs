@@ -754,10 +754,8 @@ impl Game {
         }
 
         // A zombie crossing the left edge triggers that row's one-shot
-        // lawnmower. It only catches the zombie that actually reached the
-        // edge; other zombies still marching in that row survive. A second
-        // escape in the same row loses the game, so mowers are a safety net
-        // rather than a free way to clear every wave.
+        // lawnmower. The mower then sweeps right and mows down every zombie
+        // still marching in that row. A later escape in the same row loses.
         let mut escaped_rows: Vec<usize> = self
             .zombies
             .iter()
@@ -772,28 +770,45 @@ impl Game {
                 lost = true;
                 continue;
             }
-            let Some(i) = self.zombies.iter().position(|z| z.row == row && z.x < 0.0) else {
-                continue;
-            };
-            let x = self.zombies[i].x + 0.5;
-            self.zombies.remove(i);
             self.lawnmowers[row] = false;
-            self.killed += 1;
-            self.events.push(GameEvent::ZombieDie);
-            self.effects
-                .push(effect(EffectKind::Death, x, row as f32 + 0.5));
-            self.float(FloatKind::Kill, 100, x, row as f32 + 0.3);
             self.mower_runs.push(MowerRun {
                 row,
                 x: -0.6,
                 life: 1.0,
             });
             self.events.push(GameEvent::Lawnmower);
-            self.set_notice(format!("Lawnmower caught a zombie in row {}!", row + 1));
+            self.set_notice(format!("Lawnmower cleared row {}!", row + 1));
         }
+
+        // Mowers move fast enough to cross the board in one second. Anything
+        // their blade reaches in the same row is cut down immediately.
         for run in &mut self.mower_runs {
             run.x += MOWER_SPEED * dt;
             run.life -= dt;
+        }
+        let mower_fronts: Vec<(usize, f32)> = self
+            .mower_runs
+            .iter()
+            .map(|run| (run.row, run.x + 0.85))
+            .collect();
+        let mut mowed = Vec::new();
+        self.zombies.retain(|z| {
+            if mower_fronts
+                .iter()
+                .any(|(row, front)| *row == z.row && z.x <= *front)
+            {
+                mowed.push((z.row, z.x + 0.5));
+                false
+            } else {
+                true
+            }
+        });
+        for (row, x) in mowed {
+            self.killed += 1;
+            self.events.push(GameEvent::ZombieDie);
+            self.effects
+                .push(effect(EffectKind::Death, x, row as f32 + 0.5));
+            self.float(FloatKind::Kill, 100, x, row as f32 + 0.3);
         }
         self.mower_runs
             .retain(|run| run.life > 0.0 && run.x < COLS as f32 + 1.0);
@@ -1145,8 +1160,9 @@ mod tests {
     }
 
     #[test]
-    fn lawnmower_only_catches_the_zombie_that_crossed() {
+    fn lawnmower_sweeps_the_whole_row() {
         let mut g = Game::new(21);
+        g.zombie_timer = 999.0;
         for x in [-0.05, 4.0] {
             g.zombies.push(Zombie {
                 x,
@@ -1165,12 +1181,20 @@ mod tests {
         assert_eq!(g.zombies.len(), 1);
         assert!((g.zombies[0].x - 4.0).abs() < 0.01);
         assert_eq!(g.killed, 1);
+
+        // The mower keeps rolling until it has cleared the rest of the row.
+        for _ in 0..20 {
+            g.update(0.016);
+        }
+        assert!(g.zombies.is_empty());
+        assert_eq!(g.killed, 2);
         assert_eq!(g.status, Status::Playing);
     }
 
     #[test]
-    fn two_escapes_in_one_row_beat_a_single_mower() {
+    fn two_escapes_together_are_cleared_by_one_mower() {
         let mut g = Game::new(22);
+        g.zombie_timer = 999.0;
         for x in [-0.2, -0.1] {
             g.zombies.push(Zombie {
                 x,
@@ -1185,11 +1209,10 @@ mod tests {
         }
 
         g.update(0.016);
-        assert_eq!(g.zombies.len(), 1);
+        assert!(g.zombies.is_empty());
+        assert_eq!(g.killed, 2);
+        assert_eq!(g.mower_runs.len(), 1);
         assert_eq!(g.status, Status::Playing);
-
-        g.update(0.016);
-        assert_eq!(g.status, Status::Lost);
     }
 
     #[test]
